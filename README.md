@@ -1,13 +1,3 @@
----
-title: TDS Data Bot
-emoji: 🤖
-colorFrom: blue
-colorTo: green
-sdk: docker
-app_port: 7860
-pinned: false
----
-
 # TDS P1 — Data-Analyst Telegram Bot
 
 An LLM agent that receives a data-analysis question over Telegram, works out the

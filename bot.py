@@ -32,14 +32,6 @@ TG_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 app = FastAPI()
 
-
-def make_client(timeout: float) -> httpx.AsyncClient:
-    """httpx client that forces IPv4. In containers (HF Spaces, etc.) the IPv6
-    route to api.telegram.org frequently hangs -> ConnectTimeout. Binding the
-    local address to an IPv4 interface forces IPv4 and avoids that."""
-    transport = httpx.AsyncHTTPTransport(local_address="0.0.0.0", retries=3)
-    return httpx.AsyncClient(timeout=timeout, transport=transport)
-
 # run_id -> JSONL text (one JSON object per line)
 LOGS: dict[str, str] = {}
 # chat_id -> recent message texts, so multi-turn context is available
@@ -75,7 +67,7 @@ def get_log(run_id: str):
 
 
 async def tg(method: str, **payload):
-    async with make_client(40) as c:
+    async with httpx.AsyncClient(timeout=40) as c:
         r = await c.post(f"{TG_API}/{method}", json=payload)
         return r.json()
 
@@ -103,12 +95,9 @@ async def handle_message(chat_id: int, text: str):
 
 async def poll_loop():
     offset = None
-    async with make_client(60) as c:
-        # clear any webhook so long polling works - best effort, never fatal
-        try:
-            await c.post(f"{TG_API}/deleteWebhook", json={"drop_pending_updates": False})
-        except Exception as e:  # noqa: BLE001
-            print("deleteWebhook failed (continuing):", type(e).__name__, e)
+    async with httpx.AsyncClient(timeout=60) as c:
+        # clear any webhook so long polling works
+        await c.post(f"{TG_API}/deleteWebhook", json={"drop_pending_updates": False})
         while True:
             try:
                 params = {"timeout": 25, "allowed_updates": ["message"]}
