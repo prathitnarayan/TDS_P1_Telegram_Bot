@@ -33,11 +33,18 @@ def client() -> OpenAI:
 SYSTEM = f"""You are a meticulous data analyst answering questions over public
 Indian datasets (MOSPI and similar) and any data embedded in the message.
 
+CRITICAL RULE: You must NOT answer from memory. Before giving any final answer
+you are REQUIRED to call the run_python tool at least once to fetch and/or
+compute from actual data. Guessing a value without running code is a failure.
+If you cannot fetch a dataset, use run_python to try alternative sources or to
+reason over any data provided in the message - but you must run code first.
+
 How you work:
-- Use the run_python tool to fetch datasets by URL and to compute. Prefer
-  computing the answer from data over relying on memory. Verify before you
-  answer; if a fetch fails, try another approach.
+- Use the run_python tool to fetch datasets by URL and to compute. Search for
+  the relevant public dataset, download it, inspect it, then compute the answer.
 - Data may be inline in the message, or at a public URL. No files are attached.
+- Verify before you answer. Never emit a null or placeholder value - if a first
+  attempt fails, try another source or approach with another run_python call.
 
 Your FINAL message must be a single JSON object and NOTHING else - no prose,
 no markdown, no code fences. It must match EXACTLY the JSON shape the latest
@@ -102,17 +109,24 @@ def run_agent(user_messages, log, log_url: str) -> str:
         messages.append({"role": "user", "content": turn})
 
     final_text = None
+    used_tool = False
     for step in range(MAX_STEPS):
+        # Force a tool call on the first step so weak models (e.g. Nano) can't
+        # skip straight to guessing. Some proxies ignore tool_choice, so we
+        # ALSO enforce it below by rejecting a no-tool answer on step 0.
+        tool_choice = "required" if step == 0 else "auto"
         resp = client().chat.completions.create(
             model=MODEL,
             messages=messages,
             tools=TOOLS_SPEC,
+            tool_choice=tool_choice,
             temperature=0,
         )
         m = resp.choices[0].message
         messages.append(m.model_dump(exclude_none=True))
 
         if m.tool_calls:
+            used_tool = True
             log("assistant_tool_calls", count=len(m.tool_calls))
             for tc in m.tool_calls:
                 try:
@@ -123,6 +137,22 @@ def run_agent(user_messages, log, log_url: str) -> str:
                 messages.append(
                     {"role": "tool", "tool_call_id": tc.id, "content": result}
                 )
+            continue
+
+        # No tool call. If the model never ran code, don't accept the answer -
+        # push back once and make it fetch/compute (handles providers that
+        # ignore tool_choice=required).
+        if not used_tool:
+            log("rejected_no_tool", text=(m.content or "")[:200])
+            messages.append({
+                "role": "user",
+                "content": (
+                    "You answered without running any code. That is not allowed. "
+                    "Call the run_python tool now to fetch the relevant data and "
+                    "compute the answer. Do all fetching and computing in one "
+                    "run_python call and print() the result. Do not guess."
+                ),
+            })
             continue
 
         final_text = m.content or ""

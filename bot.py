@@ -10,7 +10,7 @@
   the process is live).
 
 Env (see .env.example): TELEGRAM_BOT_TOKEN, OPENAI_API_KEY, OPENAI_BASE_URL,
-OPENAI_MODEL, PUBLIC_BASE_URL, PORT.
+OPENAI_MODEL, PUBLIC_BASE_URL, TELEGRAM_API_BASE, PORT.
 """
 import asyncio
 import json
@@ -28,9 +28,19 @@ from agent import run_agent
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "http://localhost:8000").rstrip("/")
 PORT = int(os.environ.get("PORT", "8000"))
-TG_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
+TG_BASE = os.environ.get("TELEGRAM_API_BASE", "https://api.telegram.org").rstrip("/")
+TG_API = f"{TG_BASE}/bot{BOT_TOKEN}"
 
 app = FastAPI()
+
+
+def make_client(timeout: float) -> httpx.AsyncClient:
+    """httpx client that forces IPv4. In containers (HF Spaces, etc.) the IPv6
+    route to api.telegram.org frequently hangs -> ConnectTimeout. Binding the
+    local address to an IPv4 interface forces IPv4 and avoids that."""
+    transport = httpx.AsyncHTTPTransport(local_address="0.0.0.0", retries=3)
+    return httpx.AsyncClient(timeout=timeout, transport=transport)
+
 
 # run_id -> JSONL text (one JSON object per line)
 LOGS: dict[str, str] = {}
@@ -67,7 +77,7 @@ def get_log(run_id: str):
 
 
 async def tg(method: str, **payload):
-    async with httpx.AsyncClient(timeout=40) as c:
+    async with make_client(40) as c:
         r = await c.post(f"{TG_API}/{method}", json=payload)
         return r.json()
 
@@ -95,9 +105,12 @@ async def handle_message(chat_id: int, text: str):
 
 async def poll_loop():
     offset = None
-    async with httpx.AsyncClient(timeout=60) as c:
-        # clear any webhook so long polling works
-        await c.post(f"{TG_API}/deleteWebhook", json={"drop_pending_updates": False})
+    async with make_client(60) as c:
+        # clear any webhook so long polling works - best effort, never fatal
+        try:
+            await c.post(f"{TG_API}/deleteWebhook", json={"drop_pending_updates": False})
+        except Exception as e:  # noqa: BLE001
+            print("deleteWebhook failed (continuing):", type(e).__name__, e)
         while True:
             try:
                 params = {"timeout": 25, "allowed_updates": ["message"]}

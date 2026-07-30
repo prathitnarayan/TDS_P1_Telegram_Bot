@@ -6,8 +6,14 @@ import sys
 import textwrap
 
 # Max seconds any single code block may run, and how much output we keep.
-CODE_TIMEOUT = 90
+CODE_TIMEOUT = 40
 MAX_OUTPUT_CHARS = 8000
+
+# Prepended to every run_python call: a short socket timeout so a bad/dead URL
+# fails in seconds instead of hanging the whole call, plus common imports.
+CODE_PREAMBLE = (
+    "import socket as _s; _s.setdefaulttimeout(12)\n"
+)
 
 TOOLS_SPEC = [
     {
@@ -17,10 +23,13 @@ TOOLS_SPEC = [
             "description": (
                 "Execute Python 3 code and return combined stdout+stderr. "
                 "Available: pandas, numpy, requests, bs4 (BeautifulSoup), "
-                "openpyxl, lxml. Network access IS allowed - fetch public "
+                "openpyxl, html5lib. Network access IS allowed - fetch public "
                 "datasets by URL (MOSPI, data.gov.in, CSV/XLSX links, etc.). "
-                "Always print() the values you want to see; return values are "
-                "not captured. Keep each call focused."
+                "IMPORTANT: each call runs in a FRESH process - variables do NOT "
+                "persist between calls, so do all fetching AND computing in the "
+                "SAME call and print() the final result. Do NOT guess dataset "
+                "URLs; a wrong URL will error. A 12s socket timeout is preset, "
+                "so dead URLs fail fast. Always print() what you want to see."
             ),
             "parameters": {
                 "type": "object",
@@ -38,7 +47,7 @@ def run_python(code: str) -> str:
     """Run code in a fresh subprocess, return truncated stdout+stderr."""
     try:
         proc = subprocess.run(
-            [sys.executable, "-c", code],
+            [sys.executable, "-c", CODE_PREAMBLE + code],
             capture_output=True,
             text=True,
             timeout=CODE_TIMEOUT,
